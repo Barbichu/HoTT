@@ -143,6 +143,7 @@ Lemma inhab_contr (A : inhabType) : (forall x, {elt A} = x) -> is_contr A.
 Proof. exact: IsContr. Qed. (* Cyril: move/IsContr does not work, why ???? *) 
 
 Lemma unit_is_contr : is_contr unit. Proof. by exists tt; case. Qed.
+Hint Resolve unit_is_contr.
 
 Definition UIP (A : Type) := forall (x y : A) (p q : x = y), p = q.
 
@@ -169,7 +170,6 @@ Proof. rewrite -[y](is_contr_eq _ x) //; exists 1; exact: is_contr_UIP. Qed.
 Lemma is_contr_sig_eqr_is_contr : is_contr {y : A & x = y}.
 Proof. exists (existT _ x 1); case=> [z p]; case p; exact 1. Qed.
 
-
 (* Was: pathspace_contr_opp *)
 Lemma is_contr_sig_eql_is_contr : is_contr {y : A & y = x}.
 Proof.
@@ -178,6 +178,8 @@ case=> [z p]; case p; exact 1.
 Qed.
 
 End ContrTheory.
+Hint Resolve is_contr_sig_eqr_is_contr.
+Hint Resolve is_contr_sig_eql_is_contr.
 
 Definition funext_dep := forall A P (B1 B2 : forall a : A, P a), 
   (forall x, B1 x = B2 x) -> B1 = B2.

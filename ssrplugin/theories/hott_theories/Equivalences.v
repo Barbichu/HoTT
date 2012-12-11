@@ -364,12 +364,35 @@ Proof. by rewrite -[RHS](precomp_equivK [equiv of diag_pi1]). Qed.
 (* diag_pi1 \o fg = diag_pi2 \o fg since this is f = g when eta is *)
 (* definitional. And this equality holds by a simple rewrite of the *)
 (* above equality of the projections. *)
-Lemma funext (X Y : Type)  (f g : X -> Y) : f =1 g -> f = g.
+Lemma funext (X Y : Type) (f g : X -> Y) : f =1 g -> f = g.
 Proof.
 move=> eq_fg; pose fg x : diag_sq Y := Diag_sq (eq_fg x).
 suffices: diag_pi1 \o fg = diag_pi2 \o fg by []. 
 by rewrite diag_pi12.
 Qed.
+
+Lemma forall_is_contr (A : Type) (B : A -> Type) :
+  (forall x, is_contr (B x)) -> is_contr (forall x, B x).
+Proof.
+move=> B_is_contr; have -> : B = (fun x => unit).
+  by apply: funext => x; apply: eq_equiv^-1; apply: equiv_to_is_contr.
+by exists (fun _ => tt) => a; apply: funext => /= x; case: a.
+Qed.
+
+Lemma funext_dep (A : Type) (B : A -> Type) (f g : forall x, B x) :
+  (forall x, f x = g x) -> f = g.
+Proof.
+move=> eq1_fg; pose eqg x := {y : B x | y = g x}.
+pose pr (h : forall x, eqg x) x := pr1 (h x).
+pose f' x : eqg x := (f x; eq1_fg x).
+suff /(congr1 pr) prf : f' = (fun x => (g x; 1)) by rewrite [f]prf.
+by apply: is_contr_eq; apply: forall_is_contr; rewrite /eqg.
+Qed.
+
+(* Definition happly (A : Type) (B : A -> Type) (f g : forall x, B x) : *)
+(*   f = g -> forall x, f x = g x := fun p x => (@^~ x) `_* p. *)
+(* Definition happlyV (A : Type) (B : A -> Type) (f g : forall x, B x) : *)
+(*   f = g -> (forall x, f x = g x) :=  ??? *)
 
 (* We now study the elementary theory of the  composition of *)
 (* functions with equivalences.*)
