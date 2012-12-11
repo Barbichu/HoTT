@@ -14,41 +14,42 @@ Fixpoint has_hlevel (n : nat) : Type -> Type :=
   if n is m.+1 then (fun A => forall x y : A, has_hlevel m (x = y))
   else is_contr.
 
-Definition respV A B (x y : A) (e : A <~> B) : (e x = e y) -> x = y :=
-  fun p => (e^-1`_* p)%equiv ^ (equivK e).
+Arguments resp {A B x y} f _.
 
-Arguments respV {A B x y e} _.
-
-Lemma respK A B (x y : A) (e : A <~> B) :
-  cancel (fun p : x = y => e `_* p) respV.
-Proof. exact: can_respp. Qed.
-
-Lemma resppJ  A B C (f g : A -> B) (p : f =1 g) (h : B -> C)
+Lemma resppJ A B C (f g : A -> B) (p : f =1 g) (h : B -> C)
       (x y : A) (q : f x = f y) :
   h`_* (q ^ p) = (h`_* q) ^ (fun x => h`_* (p x)).
 Proof. by rewrite !resppM -resppV. Qed.
 
-Lemma conjp_eq1 {A B} {x y : A} (f g : A -> B) (p1 p2 : f =1 g) (q : f x = f y) : 
+Lemma eq1_conjp {A B} {x y : A} (f g : A -> B)
+  (p1 p2 : f =1 g) (q : f x = f y) : 
   (forall t, p1 t = p2 t) -> q ^ p1 = q ^ p2.
 Proof. by move=> coh; rewrite conjpE !coh. Qed.
 
-Lemma can_respp_coh A B (e : A -> B)(f : B -> A)(efK : cancel e f) (feK : cancel f e) 
-  x y (u : e x = e y) :
-    (forall t, e`_* (efK t) = feK (e t)) ->  e`_* (f`_* u ^ efK) = u.
-Proof. 
-by move=> h; rewrite (resppJ efK); rewrite (conjp_eq1 _ h); apply: can_respp.
+Lemma equiv_respRJ A B (e : A <~> B) x y (u : e x = e y) :
+     e`_* ((e^-1)%equiv`_* u ^ (equivK e)) = u.
+Proof.
+by rewrite (resppJ (equivK _)) (eq1_conjp _ (resp_equivK _)); apply: can_respp.
 Qed.
 
-Lemma respVK A B (x y : A) (e : A <~> B) :
-  cancel respV (fun p : x = y => e `_* p).
-Proof. move=> u /=; exact: (can_respp_coh _ (resp_equivK e)). Qed.
+Section RespEquiv.
+Variables (A B : Type) (x y : A) (e : A <~> B).
+Arguments resp {A B x y f} _.
 
-Definition equiv_resp A B (e : A <~> B) (x y : A) : x = y <~> e x = e y :=
-  can2_equiv (@respK _ _ x y e) (@respVK _ _ x y e).
+Definition resp_inverse : (e x = e y) -> x = y :=
+  fun p => (e^-1`_* p)%equiv ^ (equivK e).
+
+Lemma respK : cancel resp resp_inverse. Proof. exact: can_respp. Qed.
+Lemma resp_inverseK : cancel resp_inverse resp.
+Proof. exact: equiv_respRJ. Qed.
+
+Canonical equiv_resp : x = y <~> e x = e y := can2_equiv respK resp_inverseK.
+
+End RespEquiv.
 
 Lemma equiv_has_hlevel n U V : U <~> V -> has_hlevel n U -> has_hlevel n V.
 Proof.
 elim: n U V => /= [U V e U_is_contr | n ihn U V e U_level_n x y].
   exact: equiv_contr_is_contr e.
-exact: (ihn _ _ (equiv_sym (equiv_resp (equiv_sym e) x y))).
+exact: (ihn _ _ [equiv of (resp e^-1)^-1]).
 Qed.
