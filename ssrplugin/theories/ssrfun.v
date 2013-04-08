@@ -1,5 +1,5 @@
 (* (c) Copyright Microsoft Corporation and Inria. All rights reserved. *)
-Require Import ssreflect.
+Require Import HoTT ssreflect.
 Local Open Scope identity_scope.
 
 (******************************************************************************)
@@ -409,13 +409,16 @@ Definition SimplFunDelta aT rT (f : aT -> aT -> rT) := [fun z => f z z].
 (* Shorthand for some basic equality lemmas. *)
 
 (* assia/hott Notation erefl := refl_equal.*)
-Notation erefl := identity_refl.
+Notation erefl := idpath.
 Notation ecast i T e x := (let: erefl in _ = i := e return T in x).
-Definition esym := identity_sym.
-Definition nesym := not_identity_sym.
-Definition etrans := identity_trans.
-Definition congr1 := f_equal.
-Definition congr2 := f_equal2.
+Definition esym := @inverse.
+Definition nesym (A : Type) (x y : A) : x <> y -> y <> x := 
+  fun nxy pyx => nxy (inverse pyx).
+Definition etrans := @concat.
+Definition congr1 := @ap.
+Definition congr2 (A B C : Type) (f : A -> B -> C) 
+           (x x' : A) (y y' : B): x = x' -> y = y' -> f x y = f x' y' := 
+  fun px py => ap11 (ap f px) py.
 (* Force at least one implicit when used as a view. *)
 Prenex Implicits esym nesym.
 
@@ -596,6 +599,22 @@ Notation "{ 'mono' f : x y /~ a }" :=
   (at level 0, f at level 99, x ident, y ident,
    format "{ 'mono'  f  :  x  y  /~  a }") : type_scope.
 
+(* NoConf for options *)
+Section OptionNoConf.
+Variable T : Type.
+
+Lemma option_noconf (x y : option T) : x = y -> forall P,
+ match x, y with
+   | None, None => P -> P
+   | Some x, Some y => (x = y -> P) -> P
+   | _, _ => P
+ end.
+Proof. by move->; case: y => //= ? ?; apply. Qed.
+
+Definition option_noconf_class := NoconfClass option_noconf.
+Canonical option_noconfType := @NoConfType (option T) option_noconf_class.
+End OptionNoConf.
+
 (* In an intuitionistic setting, we have two degrees of injectivity. The     *)
 (* weaker one gives only simplification, and the strong one provides a left  *)
 (* inverse (we show in `fintype' that they coincide for finite types).       *)
@@ -620,7 +639,7 @@ Lemma can_pcan g : cancel g -> pcancel (fun y => Some (g y)).
 Proof. by move=> fK x; congr (Some _). Qed.
 
 Lemma pcan_inj g : pcancel g -> injective.
-Proof. by move=> fK x y /(congr1 g); rewrite !fK => [[]]. Qed.
+Proof. by move=> fK x y /(congr1 g); rewrite !fK; inject. Qed.
 
 Lemma can_inj g : cancel g -> injective.
 Proof. by move/can_pcan; exact: pcan_inj. Qed.
@@ -633,7 +652,8 @@ Proof. by move=> fK <-. Qed.
 
 End Injections.
 
-Lemma Some_inj {T} : injective (@Some T). Proof. by move=> x y []. Qed.
+Lemma Some_inj {T} : injective (@Some T).
+Proof. by move=> x y; inject. Qed.
 
 (* cancellation lemmas for dependent type casts.                             *)
 Lemma esymK T x y : cancel (@esym T x y) (@esym T y x).

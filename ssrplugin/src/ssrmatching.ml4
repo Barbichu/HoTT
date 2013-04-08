@@ -73,12 +73,12 @@ let env_size env = List.length (Environ.named_context env)
 let safeDestApp c =
   match kind_of_term c with App (f, a) -> f, a | _ -> c, [| |]
 let get_index = function ArgArg i -> i | _ ->
-  Errors.anomaly "Uninterpreted index"
+  Errors.anomaly (str"Uninterpreted index")
 (* Toplevel constr must be globalized twice ! *)
 let glob_constr ist gsigma genv = function
   | _, Some ce ->
     let ltacvars = List.map fst ist.lfun, [] in
-    Constrintern.intern_gen false ~ltacvars:ltacvars gsigma genv ce
+    Constrintern.intern_gen (OfType None) ~ltacvars:ltacvars gsigma genv ce
   | rc, None -> rc
 
 (* Term printing utilities functions for deciding bracketing.  *)
@@ -117,9 +117,11 @@ let prl_term (k, c) = pr_guarded (guard_term k) prl_glob_constr_and_expr c
 let add_genarg tag pr =
   let wit, globwit, rawwit as wits = create_arg None tag in
   let glob _ rarg = in_gen globwit (out_gen rawwit rarg) in
+  Tacintern.add_intern_genarg tag glob;
   let interp _ gl garg = Tacmach.project gl,in_gen wit (out_gen globwit garg) in
+  Tacinterp.add_interp_genarg tag interp;
   let subst _ garg = garg in
-  add_interp_genarg tag (glob, interp, subst);
+  Tacsubst.add_genarg_subst tag subst;
   let gen_pr _ _ _ = pr in
   Pptactic.declare_extra_genarg_pprule
     (rawwit, gen_pr) (globwit, gen_pr) (wit, gen_pr);
@@ -128,9 +130,9 @@ let add_genarg tag pr =
 (** Constructors for cast type *)
 let dC t = CastConv t
 (** Constructors for constr_expr *)
-let isCVar = function CRef (Ident _) -> true | _ -> false
-let destCVar = function CRef (Ident (_, id)) -> id | _ ->
-  Errors.anomaly "not a CRef"
+let isCVar = function CRef (Ident _, _) -> true | _ -> false
+let destCVar = function CRef (Ident (_, id), _) -> id | _ ->
+  Errors.anomaly (str"not a CRef")
 let mkCHole loc = CHole (loc, None)
 let mkCLambda loc name ty t = 
    CLambdaN (loc, [[loc, name], Default Explicit, ty], t)
@@ -147,8 +149,8 @@ let mkRLambda n s t = GLambda (dummy_loc, n, Explicit, s, t)
 let combineCG t1 t2 f g = match t1, t2 with
  | (x, (t1, None)), (_, (t2, None)) -> x, (g t1 t2, None)
  | (x, (_, Some t1)), (_, (_, Some t2)) -> x, (mkRHole, Some (f t1 t2))
- | _, (_, (_, None)) -> Errors.anomaly "have: mixed C-G constr"
- | _ -> Errors.anomaly "have: mixed G-C constr"
+ | _, (_, (_, None)) -> Errors.anomaly (str"have: mixed C-G constr")
+ | _ -> Errors.anomaly (str"have: mixed G-C constr")
 let loc_ofCG = function
  | (_, (s, None)) -> Glob_ops.loc_of_glob_constr s
  | (_, (_, Some s)) -> Constrexpr_ops.constr_loc s
@@ -375,6 +377,7 @@ type pattern_class =
   | KpatConst
   | KpatEvar of existential_key
   | KpatLet
+  | KpatLam
   | KpatRigid
   | KpatFlex
   | KpatProj of constant
@@ -441,7 +444,7 @@ let mk_tpattern ?p_origin ?(hack=false) env sigma0 (ise, t) ok dir p =
   let k, f, a =
     let f, a = Reductionops.whd_betaiota_stack ise p in
     match kind_of_term f with
-    | Const p ->
+    | Const (p, _) ->
       let np = proj_nparams p in
       if np = 0 || np > List.length a then KpatConst, f, a else
       let a1, a2 = List.chop np a in KpatProj p, applist(f, a1), a2
@@ -455,6 +458,7 @@ let mk_tpattern ?p_origin ?(hack=false) env sigma0 (ise, t) ok dir p =
           ++ str " in " ++ pr_constr_pat rule))
     | LetIn (_, v, _, b) ->
       if b <> mkRel 1 then KpatLet, f, a else KpatFlex, v, a
+    | Lambda _ -> KpatLam, f, a
     | _ -> KpatRigid, f, a in
   let aa = Array.of_list a in
   let ise', p' = evars_for_FO ~hack env sigma0 ise (mkApp (f, aa)) in
@@ -471,16 +475,18 @@ let ungen_upat lhs (sigma, t) u =
   | Const _ -> KpatConst
   | Evar (k, _) -> if is_defined sigma k then raise NoMatch else KpatEvar k
   | LetIn _ -> KpatLet
+  | Lambda _ -> KpatLam
   | _ -> KpatRigid in
   sigma, {u with up_k = k; up_FO = lhs; up_f = f; up_a = a; up_t = t}
 
 let nb_cs_proj_args pc f u =
   let na k =
-    List.length (lookup_canonical_conversion (ConstRef pc, k)).o_TCOMPS in
+    List.length (lookup_canonical_conversion
+		   (ConstRef pc, k)).o_TCOMPS in
   try match kind_of_term f with
   | Prod _ -> na Prod_cs
   | Sort s -> na (Sort_cs (family_of_sort s))
-  | Const c' when c' = pc -> Array.length (snd (destApp u.up_f))
+  | Const (c', _) when c' = pc -> Array.length (snd (destApp u.up_f))
   | Var _ | Ind _ | Construct _ | Const _ -> na (Const_cs (global_of_constr f))
   | _ -> -1
   with Not_found -> -1
@@ -510,10 +516,11 @@ let filter_upat i0 f n u fpats =
   let na = Array.length u.up_a in
   if n < na then fpats else
   let np = match u.up_k with
-  | KpatConst when eq_constr u.up_f f -> na
+  | KpatConst when eq_constr_nounivs u.up_f f -> na
   | KpatFixed when u.up_f = f -> na 
   | KpatEvar k when isEvar_k k f -> na
   | KpatLet when isLetIn f -> na
+  | KpatLam when isLambda f -> na
   | KpatRigid when isRigid f -> na
   | KpatFlex -> na
   | KpatProj pc ->
@@ -526,10 +533,11 @@ let filter_upat_FO i0 f n u fpats =
   let np = nb_args u.up_FO in
   if n < np then fpats else
   let ok = match u.up_k with
-  | KpatConst -> eq_constr u.up_f f 
+  | KpatConst -> eq_constr_nounivs u.up_f f 
   | KpatFixed -> u.up_f = f 
   | KpatEvar k -> isEvar_k k f
   | KpatLet -> isLetIn f
+  | KpatLam -> isLambda f
   | KpatRigid -> isRigid f
   | KpatProj pc -> f = mkConst pc
   | KpatFlex -> i0 := n; true in
@@ -579,12 +587,12 @@ let match_upats_FO upats env sigma0 ise =
            let pt' = unif_end env sigma0 ise' u.up_t (u.up_ok lhs) in
            raise (FoundUnif (ungen_upat lhs pt' u))
        with FoundUnif _ as sigma_u -> raise sigma_u 
-       | Not_found -> Errors.anomaly "incomplete ise in match_upats_FO"
+       | Not_found -> Errors.anomaly (str"incomplete ise in match_upats_FO")
        | _ -> () in
     List.iter one_match fpats
   done;
   iter_constr_LR loop f; Array.iter loop a in
-  fun c -> try loop c with Invalid_argument _ -> Errors.anomaly "IN FO"
+  fun c -> try loop c with Invalid_argument _ -> Errors.anomaly (str"IN FO")
 
 let prof_FO = mk_profiler "match_upats_FO";;
 let match_upats_FO upats env sigma0 ise c =
@@ -646,7 +654,7 @@ let fixed_upat = function
 let do_once r f = match !r with Some _ -> () | None -> r := Some (f ())
 
 let assert_done r = 
-  match !r with Some x -> x | None -> Errors.anomaly "do_once never called"
+  match !r with Some x -> x | None -> Errors.anomaly (str"do_once never called")
 
 type subst = Environ.env -> Term.constr -> int -> Term.constr
 type find_P = 
@@ -659,31 +667,35 @@ type conclude = unit -> Term.constr * ssrdir * (Evd.evar_map * Term.constr)
 let mk_tpattern_matcher
   ?(raise_NoMatch=false) ?upats_origin sigma0 occ (ise, upats)
 =
-  let nocc = ref 0 and skip_occ = ref false in
-  let use_occ, occ_list = match occ with
-  | Some (true, ol) -> ol = [], ol
-  | Some (false, ol) -> ol <> [], ol
-  | None -> false, [] in
-  let max_occ = List.fold_right max occ_list 0 in
-  let subst_occ =
-    let occ_set = Array.make max_occ (not use_occ) in
-    let _ = List.iter (fun i -> occ_set.(i - 1) <- use_occ) occ_list in
-    let _ = if max_occ = 0 then skip_occ := use_occ in
-    fun () -> incr nocc;
-    if !nocc = max_occ then skip_occ := use_occ;
-    if !nocc <= max_occ then occ_set.(!nocc - 1) else not use_occ in
-  let upat_that_matched = ref None in
-  let match_EQ env sigma u = 
-    match u.up_k with
-    | KpatLet ->
-      let x, pv, t, pb = destLetIn u.up_f in
-      let env' = Environ.push_rel (x, None, t) env in
-      let match_let f = match kind_of_term f with
-      | LetIn (_, v, _, b) -> unif_EQ env sigma pv v && unif_EQ env' sigma pb b
-      | _ -> false in match_let
-    | KpatFixed -> (=) u.up_f
-    | KpatConst -> eq_constr u.up_f
-    | _ -> unif_EQ env sigma u.up_f in
+let nocc = ref 0 and skip_occ = ref false in
+let use_occ, occ_list = match occ with
+| Some (true, ol) -> ol = [], ol
+| Some (false, ol) -> ol <> [], ol
+| None -> false, [] in
+let max_occ = List.fold_right max occ_list 0 in
+let subst_occ =
+  let occ_set = Array.make max_occ (not use_occ) in
+  let _ = List.iter (fun i -> occ_set.(i - 1) <- use_occ) occ_list in
+  let _ = if max_occ = 0 then skip_occ := use_occ in
+  fun () -> incr nocc;
+  if !nocc = max_occ then skip_occ := use_occ;
+  if !nocc <= max_occ then occ_set.(!nocc - 1) else not use_occ in
+let upat_that_matched = ref None in
+let match_EQ env sigma u = 
+  match u.up_k with
+  | KpatLet ->
+    let x, pv, t, pb = destLetIn u.up_f in
+    let env' = Environ.push_rel (x, None, t) env in
+    let match_let f = match kind_of_term f with
+    | LetIn (_, v, _, b) -> unif_EQ env sigma pv v && unif_EQ env' sigma pb b
+    | _ -> false in match_let
+  | KpatFixed -> (=) u.up_f
+  | KpatConst -> eq_constr_nounivs u.up_f
+  | KpatLam -> fun c ->
+     (match kind_of_term c with
+     | Lambda _ -> unif_EQ env sigma u.up_f c
+     | _ -> false)
+  | _ -> unif_EQ env sigma u.up_f in
 let p2t p = mkApp(p.up_f,p.up_a) in 
 let source () = match upats_origin, upats with
   | None, [p] -> 
@@ -694,7 +706,7 @@ let source () = match upats_origin, upats with
   | Some (dir,rule), _ -> str"The " ++ pr_dir_side dir ++ str" of " ++ 
       pr_constr_pat rule ++ spc()
   | _, [] | None, _::_::_ ->
-      Errors.anomaly "mk_tpattern_matcher with no upats_origin" in
+      Errors.anomaly (str"mk_tpattern_matcher with no upats_origin") in
 ((fun env c h ~k -> 
   do_once upat_that_matched (fun () -> 
     try
@@ -706,7 +718,7 @@ let source () = match upats_origin, upats with
       errorstrm (source () ++ str "does not match any subterm of the goal")
     | NoProgress when (not raise_NoMatch) ->
         let dir = match upats_origin with Some (d,_) -> d | _ ->
-          Errors.anomaly "mk_tpattern_matcher with no upats_origin" in      
+          Errors.anomaly (str"mk_tpattern_matcher with no upats_origin") in
         errorstrm (str"all matches of "++source()++
           str"are equal to the " ++ pr_dir_side (inv_dir dir))
     | NoProgress -> raise NoMatch);
@@ -714,7 +726,7 @@ let source () = match upats_origin, upats with
   if !skip_occ then (ignore(k env u.up_t 0); c) else
   let match_EQ = match_EQ env sigma u in
   let pn = Array.length pa in
-  let rec subst_loop (env,h as acc) c' = 
+  let rec subst_loop (env,h as acc) c' =
     if !skip_occ then c' else
     let f, a = splay_app sigma c' in
     if Array.length a >= pn && match_EQ f && unif_EQ_args env sigma pa a then
@@ -732,11 +744,11 @@ let source () = match upats_origin, upats with
   let sigma, ({up_f = pf; up_a = pa} as u) =
     match !upat_that_matched with
     | Some x -> x | None when raise_NoMatch -> raise NoMatch
-    | None -> Errors.anomaly "companion function never called" in
+    | None -> Errors.anomaly (str"companion function never called") in
   let p' = mkApp (pf, pa) in
   if max_occ <= !nocc then p', u.up_dir, (sigma, u.up_t)
   else errorstrm (str"Only " ++ int !nocc ++ str" < " ++ int max_occ ++
-        str(plural !nocc " occurence") ++ match upats_origin with
+        str(String.plural !nocc " occurence") ++ match upats_origin with
         | None -> str" of" ++ spc() ++ pr_constr_pat p'
         | Some (dir,rule) -> str" of the " ++ pr_dir_side dir ++ fnl() ++
             ws 4 ++ pr_constr_pat p' ++ fnl () ++ 
@@ -820,9 +832,9 @@ type pattern = Evd.evar_map * (Term.constr, Term.constr) ssrpattern
 
 
 let id_of_cpattern = function
-  | _,(_,Some (CRef (Ident (_, x)))) -> Some x
-  | _,(_,Some (CAppExpl (_, (_, Ident (_, x)), []))) -> Some x
-  | _,(GRef (_, VarRef x) ,None) -> Some x
+  | _,(_,Some (CRef (Ident (_, x), _))) -> Some x
+  | _,(_,Some (CAppExpl (_, (_, Ident (_, x), _), []))) -> Some x
+  | _,(GRef (_, VarRef x, _) ,None) -> Some x
   | _ -> None
 let id_of_Cterm t = match id_of_cpattern t with
   | Some x -> x
@@ -838,9 +850,9 @@ let interp_open_constr ist gl gc =
 let pf_intern_term ist gl (_, c) = glob_constr ist (project gl) (pf_env gl) c
 let interp_term ist gl (_, c) = snd (interp_open_constr ist gl c)
 let glob_ssrterm gs = function
-  | k, (_, Some c) -> k, Tacinterp.intern_constr gs c
+  | k, (_, Some c) -> k, Tacintern.intern_constr gs c
   | ct -> ct
-let subst_ssrterm s (k, c) = k, Tacinterp.subst_glob_constr_and_expr s c
+let subst_ssrterm s (k, c) = k, Tacsubst.subst_glob_constr_and_expr s c
 let pr_ssrterm _ _ _ = pr_term
 let input_ssrtermkind strm = match Stream.npeek 1 strm with
   | [Tok.KEYWORD "("] -> '('
@@ -875,7 +887,7 @@ let glob_cpattern gs p =
          | (r1, Some _), (r2, Some _) when isCVar t1 ->
              encode k "In" [r1; r2; bind_in t1 t2]
          | (r1, Some _), (r2, Some _) -> encode k "In" [r1; r2]
-         | _ -> Errors.anomaly "where are we?"
+         | _ -> Errors.anomaly (str"where are we?")
          with _ when isCVar t1 -> encode k "In" [bind_in t1 t2])
      | CNotation(_, "( _ in _ in _ )", ([t1; t2; t3], [], [])) ->
          check_var t2; encode k "In" [fst (glob t1); bind_in t2 t3]
@@ -933,7 +945,39 @@ let interp_pattern ist gl red redty =
     | GCast(_,GHole _,CastConv(GLambda(_,Name x,_,_,c))) -> f x (' ',(c,None))
     | it -> g t with _ -> g t in
   let decodeG t f g = decode (mkG t) f g in
-  let bad_enc id _ = Errors.anomaly ("bad encoding for pattern " ^ id) in
+  let bad_enc id _ = Errors.anomaly (str"bad encoding for pattern "++str id) in
+  let cleanup_XinE h x rp sigma =
+    let h_k = match kind_of_term h with Evar (k,_) -> k | _ -> assert false in
+    let to_clean, update = (* handle rename if x is already used *)
+      let ctx = pf_hyps gl in
+      let len = Sign.named_context_length ctx in
+      let name = ref None in
+      try ignore(Sign.lookup_named x ctx); (name, fun k ->
+        if !name = None then
+        let nctx = Evd.evar_context (Evd.find sigma k) in
+        let nlen = Sign.named_context_length nctx in
+        if nlen > len then begin
+          name := Some (pi1 (List.nth nctx (nlen - len - 1)))
+        end)
+      with Not_found -> ref (Some x), fun _ -> () in
+    let sigma0 = project gl in
+    let new_evars =
+      let rec aux acc t = match kind_of_term t with
+      | Evar (k,_) ->
+          if k = h_k || List.mem k acc || Evd.mem sigma0 k then acc else
+          (update k; k::acc)
+      | _ -> fold_constr aux acc t in 
+      aux [] (Evarutil.nf_evar sigma rp) in
+    let sigma = 
+      List.fold_left (fun sigma e ->
+        if Evd.is_defined sigma e then sigma else (* clear may be recursiv *)
+        let name = Option.get !to_clean in
+        let g = Goal.build e in
+        pp(lazy(pr_id name));
+        try snd(Logic.prim_refiner (Proof_type.Thin [name]) sigma g)
+        with Evarutil.ClearDependencyError _ -> sigma)
+      sigma new_evars in
+    sigma in
   let red = match red with
     | T(k,(GCast (_,GHole _,(CastConv(GLambda (_,Name id,_,_,t)))),None))
         when let id = string_of_id id in let len = String.length id in
@@ -979,7 +1023,8 @@ let interp_pattern ist gl red redty =
     let rp = mkXLetIn dummy_loc (Name x) rp in
     let sigma, rp = interp_term ist gl rp in
     let _, h, _, rp = destLetIn rp in
-    let rp = subst1 h rp in
+    let sigma = cleanup_XinE h x rp sigma in
+    let rp = subst1 h (Evarutil.nf_evar sigma rp) in
     sigma, mk h rp
   | E_In_X_In_T(e, x, rp) | E_As_X_In_T (e, x, rp) ->
     let mk e x p =
@@ -987,7 +1032,8 @@ let interp_pattern ist gl red redty =
     let rp = mkXLetIn dummy_loc (Name x) rp in
     let sigma, rp = interp_term ist gl rp in
     let _, h, _, rp = destLetIn rp in
-    let rp = subst1 h rp in
+    let sigma = cleanup_XinE h x rp sigma in
+    let rp = subst1 h (Evarutil.nf_evar sigma rp) in
     let sigma, e = interp_term ist (re_sig (sig_it gl) sigma) e in
     sigma, mk e h rp
 ;;
@@ -1080,7 +1126,7 @@ let eval_pattern ?raise_NoMatch env0 sigma0 concl0 pattern occ do_subst =
 ;;
 
 let redex_of_pattern (sigma, p) = let e = match p with
-  | In_T _ | In_X_In_T _ -> Errors.anomaly "pattern without redex"
+  | In_T _ | In_X_In_T _ -> Errors.anomaly (str"pattern without redex")
   | T e | X_In_T (e, _) | E_As_X_In_T (e, _, _) | E_In_X_In_T (e, _, _) -> e in
   Reductionops.nf_evar sigma e
 
@@ -1123,7 +1169,7 @@ let pf_fill_occ_term gl occ t =
   let cl,(_,t) = fill_occ_term env concl occ sigma0 t in
   cl, t
 
-let cpattern_of_id id = ' ', (GRef (dummy_loc, VarRef  id), None)
+let cpattern_of_id id = ' ', (GRef (dummy_loc, VarRef id, None), None)
 
 let is_wildcard = function
   | _,(_,Some (CHole _)|GHole _,None) -> true
@@ -1151,9 +1197,9 @@ ARGUMENT EXTEND ltacctx TYPED AS int PRINTED BY pr_ltacctx
 END
 
 let get_ltacctx i = match !ltacctxs with
-| _ when i = noltacctx -> Errors.anomaly "Missing Ltac context"
+| _ when i = noltacctx -> Errors.anomaly (str"Missing Ltac context")
 | n, (i', ist) :: s when i' = i -> ltacctxs := (n, s); ist
-| _ -> Errors.anomaly "Bad scope in SSR tactical"
+| _ -> Errors.anomaly (str"Bad scope in SSR tactical")
 
 (* "ssrpattern" *)
 let pr_ssrpatternarg _ _ _ cpat = pr_rpattern cpat

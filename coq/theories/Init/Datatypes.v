@@ -85,34 +85,32 @@ Notation "A <-> B" := (iff A B) : type_scope.
 
 (** [unit] is a singleton datatype with sole inhabitant [tt] *)
 
-(* Inductive unit : Type := 
-    tt : unit. *)
+(* Inductive unit : Type :=  *)
+(*     tt : unit. *)
 
 (** [bool] is the datatype of the boolean values [true] and [false] *)
 
-(*
-Inductive bool : Type :=
-  | true : bool
-  | false : bool.
 
-Add Printing If bool.
+(* Inductive bool : Type := *)
+(*   | true : bool *)
+(*   | false : bool. *)
 
-Delimit Scope bool_scope with bool.
+(* Add Printing If bool. *)
 
-Bind Scope bool_scope with bool.
+(* Delimit Scope bool_scope with bool. *)
 
-Definition andb (b1 b2 : bool) : bool := if b1 then b2 else false.
+(* Bind Scope bool_scope with bool. *)
 
-Definition orb (b1 b2 : bool) : bool := if b1 then true else b2.
+(* Definition andb (b1 b2 : bool) : bool := if b1 then b2 else false. *)
 
-Definition negb (b : bool) := if b then false else true.
+(* Definition orb (b1 b2 : bool) : bool := if b1 then true else b2. *)
 
-Definition implb (b1 b2 : bool) : bool := if b1 then b2 else true.
+(* Definition negb (b : bool) := if b then false else true. *)
 
-Infix "||" := orb : bool_scope.
-Infix "&&" := andb : bool_scope.
+(* Definition implb (b1 b2 : bool) : bool := if b1 then b2 else true. *)
 
-*)
+(* Infix "||" := orb : bool_scope. *)
+(* Infix "&&" := andb : bool_scope. *)
 
 
 (* Natural numbers. *)

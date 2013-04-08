@@ -1,4 +1,5 @@
 (* (c) Copyright Microsoft Corporation and Inria. All rights reserved. *)
+(* (c) Copyright Microsoft Corporation and Inria. All rights reserved. *)
 
 (* This line is read by the Makefile's dist target: do not remove. *)
 let ssrversion = "1.3pl1";;
@@ -63,20 +64,26 @@ open Locusops
 
 open Ssrmatching
 
-
 (** Compatibility with HoTT *)
 let build_ssr_eq () = 
-(* std version : build_coq_eq ()*)
-(* hott version :*) (build_coq_identity_data ()).eq
+(* std version: build_coq_eq ()*)
+(* hott with identity version: (build_coq_identity_data ()).eq *)
+(* new hott version: *) 
+  gen_constant_in_modules "problem with build_ssr_eq"
+    [["HoTT"; "Overture"]] "paths"
+
 let build_ssr_eq_refl () = 
-(* std version : (build_coq_eq_data()).refl *)
-(* hott version : *) (build_coq_identity_data ()).refl
+(* std version: (build_coq_eq_data()).refl *)
+(* hott with identity version: (build_coq_identity_data ()).refl *)
+(* new hott version: *)
+  gen_constant_in_modules "problem with build_ssr_eq_refl"
+    [["HoTT"; "Overture"]] "idpath"
 
 (* Construct a Type of an arbitry level: mkType () replaces mkProp
    when equality is at Type level. Should create new universes with the
    right dirpath/toplevel module name.*)
 
-let mkType () = mkSort (Type (Univ.make_universe (Termops.new_univ_level ())))
+let mkType () = Universes.new_Type (Global.current_dirpath ())
 
 (* Tentative patch from util.ml *)
 
@@ -96,11 +103,13 @@ let array_list_of_tl v =
 
 (* end patch *)
 
+module Intset = Int.Set
 
 type loc = Loc.t
 let dummy_loc = Loc.ghost
 let errorstrm = Errors.errorlabstrm "ssreflect"
 let loc_error loc msg = Errors.user_err_loc (loc, msg, str msg)
+let anomaly s = Errors.anomaly (str s)
 
 (** look up a name in the ssreflect internals module *)
 let ssrdirpath = make_dirpath [id_of_string "ssreflect"]
@@ -112,8 +121,8 @@ let mkSsrRef name =
   try locate_reference (ssrqid name) with Not_found ->
   try locate_reference (ssrtopqid name) with Not_found ->
   Errors.error "Small scale reflection library not loaded"
-let mkSsrRRef name = GRef (dummy_loc, mkSsrRef name)
-let mkSsrConst name = constr_of_reference (mkSsrRef name)
+let mkSsrRRef name = GRef (dummy_loc, mkSsrRef name, None)
+let mkSsrConst name = Universes.constr_of_global (mkSsrRef name)
 
 (** Ssreflect load check. *)
 
@@ -159,12 +168,12 @@ let env_size env = List.length (Environ.named_context env)
 let safeDestApp c =
   match kind_of_term c with App (f, a) -> f, a | _ -> c, [| |]
 let get_index = function ArgArg i -> i | _ ->
-  Errors.anomaly "Uninterpreted index"
+  anomaly "Uninterpreted index"
 (* Toplevel constr must be globalized twice ! *)
 let glob_constr ist gsigma genv = function
   | _, Some ce ->
     let ltacvars = List.map fst ist.lfun, [] in
-    Constrintern.intern_gen false ~ltacvars:ltacvars gsigma genv ce
+    Constrintern.intern_gen (OfType None) ~ltacvars:ltacvars gsigma genv ce
   | rc, None -> rc
 
 (* Term printing utilities functions for deciding bracketing.  *)
@@ -206,9 +215,11 @@ let prl_term (k, c) = pr_guarded (guard_term k) prl_glob_constr_and_expr c
 let add_genarg tag pr =
   let wit, globwit, rawwit as wits = create_arg None tag in
   let glob _ rarg = in_gen globwit (out_gen rawwit rarg) in
+  Tacintern.add_intern_genarg tag glob;
   let interp _ gl garg = Tacmach.project gl,in_gen wit (out_gen globwit garg) in
+  Tacinterp.add_interp_genarg tag interp;
   let subst _ garg = garg in
-  add_interp_genarg tag (glob, interp, subst);
+  Tacsubst.add_genarg_subst tag subst;
   let gen_pr _ _ _ = pr in
   Pptactic.declare_extra_genarg_pprule
     (rawwit, gen_pr) (globwit, gen_pr) (wit, gen_pr);
@@ -220,16 +231,16 @@ let dC t = CastConv t
 (** Constructors for constr_expr *)
 let mkCProp loc = CSort (loc, GProp)
 let mkCType loc = CSort (loc, GType None)
-let mkCVar loc id = CRef (Ident (loc, id))
-let isCVar = function CRef (Ident _) -> true | _ -> false
-let destCVar = function CRef (Ident (_, id)) -> id | _ ->
-  Errors.anomaly "not a CRef"
+let mkCVar loc id = CRef (Ident (loc, id), None)
+let isCVar = function CRef (Ident _, _) -> true | _ -> false
+let destCVar = function CRef (Ident (_, id), _) -> id | _ ->
+  anomaly "not a CRef"
 let rec mkCHoles loc n =
   if n <= 0 then [] else CHole (loc, None) :: mkCHoles loc (n - 1)
 let mkCHole loc = CHole (loc, None)
 let rec isCHoles = function CHole _ :: cl -> isCHoles cl | cl -> cl = []
 let mkCExplVar loc id n =
-   CAppExpl (loc, (None, Ident (loc, id)), mkCHoles loc n)
+   CAppExpl (loc, (None, Ident (loc, id), None), mkCHoles loc n)
 let mkCLambda loc name ty t = 
    CLambdaN (loc, [[loc, name], Default Explicit, ty], t)
 let mkCLetIn loc name bo t = 
@@ -242,14 +253,14 @@ let mkRHole = GHole (dummy_loc, InternalHole)
 let rec mkRHoles n = if n > 0 then mkRHole :: mkRHoles (n - 1) else []
 let rec isRHoles = function GHole _ :: cl -> isRHoles cl | cl -> cl = []
 let mkRApp f args = if args = [] then f else GApp (dummy_loc, f, args)
-let mkRVar id = GRef (dummy_loc, VarRef id)
+let mkRVar id = GRef (dummy_loc, VarRef id, None)
 let mkRltacVar id = GVar (dummy_loc, id)
 let mkRCast rc rt =  GCast (dummy_loc, rc, dC rt)
 let mkRType =  GSort (dummy_loc, GType None)
 let mkRProp =  GSort (dummy_loc, GProp)
 let mkRArrow rt1 rt2 = GProd (dummy_loc, Anonymous, Explicit, rt1, rt2)
-let mkRConstruct c = GRef (dummy_loc, ConstructRef c)
-let mkRInd mind = GRef (dummy_loc, IndRef mind)
+let mkRConstruct c = GRef (dummy_loc, ConstructRef c, None)
+let mkRInd mind = GRef (dummy_loc, IndRef mind, None)
 let mkRLambda n s t = GLambda (dummy_loc, n, Explicit, s, t)
 
 (** Constructors for constr *)
@@ -279,8 +290,8 @@ let rec whdEtaApp c n =
 let combineCG t1 t2 f g = match t1, t2 with
  | (x, (t1, None)), (_, (t2, None)) -> x, (g t1 t2, None)
  | (x, (_, Some t1)), (_, (_, Some t2)) -> x, (mkRHole, Some (f t1 t2))
- | _, (_, (_, None)) -> Errors.anomaly "have: mixed C-G constr"
- | _ -> Errors.anomaly "have: mixed G-C constr"
+ | _, (_, (_, None)) -> anomaly "have: mixed C-G constr"
+ | _ -> anomaly "have: mixed G-C constr"
 let loc_ofCG = function
  | (_, (s, None)) -> Glob_ops.loc_of_glob_constr s
  | (_, (_, Some s)) -> Constrexpr_ops.constr_loc s
@@ -582,7 +593,7 @@ let is_discharged_id id = has_discharged_tag (string_of_id id)
 let wildcard_tag = "_the_"
 let wildcard_post = "_wildcard_"
 let mk_wildcard_id i =
-  id_of_string (sprintf "%s%s%s" wildcard_tag (ordinal i) wildcard_post)
+  id_of_string (sprintf "%s%s%s" wildcard_tag (String.ordinal i) wildcard_post)
 let has_wildcard_tag s = 
   let n = String.length s in let m = String.length wildcard_tag in
   let m' = String.length wildcard_post in
@@ -637,7 +648,7 @@ let anontac (x, _, _) gl =
 let rec constr_name c = match kind_of_term c with
   | Var id -> Name id
   | Cast (c', _, _) -> constr_name c'
-  | Const cn -> Name (id_of_label (con_label cn))
+  | Const (cn, _) -> Name (id_of_label (con_label cn))
   | App (c', _) -> constr_name c'
   | _ -> Anonymous
 
@@ -1153,7 +1164,7 @@ let interp_search_notation loc tag okey =
   | "Lonely notation" -> last_sc := ""; last := ""
   | "\"" ->
       let pntn, m = mk_pntn s true in
-      if string_string_contains pntn ptag then begin
+      if String.string_contains pntn ptag then begin
         let ntn = trim_ntn (pntn, m) in
         match !ntns with
         | [] -> ntns := [ntn]; scs := [!last_sc]
@@ -1197,7 +1208,7 @@ let interp_search_notation loc tag okey =
     let scs' = List.remove sc !scs in
     let w = pr_ntn ntn ++ str " is also defined " ++ pr_scs scs' in
     msg_warning (hov 4 w)
-  else if string_string_contains ntn " .. " then
+  else if String.string_contains ntn " .. " then
     err (pr_ntn ntn ++ str " is an n-ary notation");
   let nvars = List.filter (fun (_,(_,typ)) -> typ = NtnTypeConstr) nvars in
   let rec sub () = function
@@ -1247,7 +1258,7 @@ let coerce_search_pattern_to_sort hpat =
     let args' = Array.append (Array.make n_imps (Pattern.PMeta None)) args in
     Pattern.PApp (fp, args') in
   let hr, na = splay_search_pattern 0 hpat in
-  let dc, ht = Reductionops.splay_prod env sigma (Global.type_of_global hr) in
+  let dc, ht = Reductionops.splay_prod env sigma (Global.type_of_global_unsafe hr) in
   let np = List.length dc in
   if np < na then Errors.error "too many arguments in head search pattern" else
   let hpat' = if np = na then hpat else mkPApp hpat (np - na) [||] in
@@ -1284,17 +1295,24 @@ let rec interp_head_pat hpat =
 
 let all_true _ = true
 
-let interp_search_arg a =
-  let hpat, a1 = match a with
+let rec interp_search_about args accu = match args with
+| [] -> accu
+| (flag, arg) :: rem ->
+  fun gr env typ ->
+    let ans = Search.search_about_filter arg gr env typ in
+    (if flag then ans else not ans) && interp_search_about rem accu gr env typ
+
+let interp_search_arg arg =
+  let hpat, a1 = match arg with
   | (_, Search.GlobSearchSubPattern (Pattern.PMeta _)) :: a' -> all_true, a'
   | (true, Search.GlobSearchSubPattern p) :: a' ->
      let filter_head, p = interp_head_pat p in
-     if filter_head then p, a' else all_true, a
-  | _ -> all_true, a in
+     if filter_head then p, a' else all_true, arg
+  | _ -> all_true, arg in
   let is_string =
     function (_, Search.GlobSearchString _) -> true | _ -> false in
   let a2, a3 = List.partition is_string a1 in
-  hpat, a2 @ a3
+  interp_search_about (a2 @ a3) (fun gr env typ -> hpat typ)
 
 (* Module path postfilter *)
 
@@ -1322,9 +1340,9 @@ let interp_modloc mr =
     try Nametab.full_name_module qid with Not_found ->
     Errors.user_err_loc (loc, "interp_modloc", str "No Module " ++ pr_qualid qid) in
   let mr_out, mr_in = List.partition fst mr in
-  let interp_bmod b rmods =
-    if rmods = [] then fun _ _ _ -> true else
-    Search.filter_by_module_from_list (List.map interp_mod rmods, b) in
+  let interp_bmod b = function
+  | [] -> fun _ _ _ -> true
+  | rmods -> Search.module_filter (List.map interp_mod rmods, b) in
   let is_in = interp_bmod false mr_in and is_out = interp_bmod true mr_out in
   fun gr env typ -> is_in gr env typ && is_out gr env typ
 
@@ -1336,10 +1354,13 @@ let ssrdisplaysearch gr env t =
 
 VERNAC COMMAND EXTEND SsrSearchPattern
 | [ "Search" ssr_search_arg(a) ssr_modlocs(mr) ] ->
-  [ let hpat, a' = interp_search_arg a in
+  [ let hpat = interp_search_arg a in
     let in_mod = interp_modloc mr in
-    let post_filter gr env typ = in_mod gr env typ && hpat typ in
-    Search.raw_search_about post_filter ssrdisplaysearch a' ]
+    let post_filter gr env typ = in_mod gr env typ && hpat gr env typ in
+    let display gr env typ =
+      if post_filter gr env typ then ssrdisplaysearch gr env typ
+    in
+    Search.generic_search display ]
 END
 
 (* }}} *)
@@ -1477,7 +1498,7 @@ let tclBY tac = tclTHEN tac donetac
 (* Force use of the tactic_expr parsing entry, to rule out tick marks. *)
 let pr_ssrtacarg _ _ prt = prt tacltop
 ARGUMENT EXTEND ssrtacarg TYPED AS tactic PRINTED BY pr_ssrtacarg
-| [ "Qed" ] -> [ Errors.anomaly "Grammar placeholder match" ]
+| [ "Qed" ] -> [ anomaly "Grammar placeholder match" ]
 END
 GEXTEND Gram
   GLOBAL: ssrtacarg;
@@ -1634,7 +1655,7 @@ let hyp_err loc msg id =
   Errors.user_err_loc (loc, "ssrhyp", str msg ++ pr_id id)
 
 let intern_hyp ist (SsrHyp (loc, id) as hyp) =
-  let _ = intern_genarg ist (in_gen rawwit_var (loc, id)) in
+  let _ = Tacintern.intern_genarg ist (in_gen rawwit_var (loc, id)) in
   if not_section_id id then hyp else
   hyp_err loc "Can't clear section hypothesis " id
 
@@ -1710,9 +1731,9 @@ let intern_term ist sigma env (_, c) = glob_constr ist sigma env c
 let interp_term ist gl (_, c) = snd (interp_open_constr ist gl c)
 let force_term ist gl (_, c) = interp_constr ist gl c
 let glob_ssrterm gs = function
-  | k, (_, Some c) -> k, Tacinterp.intern_constr gs c
+  | k, (_, Some c) -> k, Tacintern.intern_constr gs c
   | ct -> ct
-let subst_ssrterm s (k, c) = k, Tacinterp.subst_glob_constr_and_expr s c
+let subst_ssrterm s (k, c) = k, Tacsubst.subst_glob_constr_and_expr s c
 let interp_ssrterm _ gl t = Tacmach.project gl, t
 
 ARGUMENT EXTEND ssrterm
@@ -1767,7 +1788,7 @@ let pr_ahyp (SsrHyp (_, id), mode) = match mode with
   | "(" -> str "(" ++ pr_id id ++ str ")"
   | "@" -> str "@" ++ pr_id id
   | " " -> pr_id id
-  | _ -> Errors.anomaly "pr_ahyp: wrong annotation for ssrhyp"
+  | _ -> anomaly "pr_ahyp: wrong annotation for ssrhyp"
 let pr_ahyps (a,b) = pr_list pr_spc pr_ahyp (List.combine a b)
 let pr_ssrahyps _ _ _ = pr_ahyps
 
@@ -2090,8 +2111,8 @@ END
 let rec isCxHoles = function (CHole _, None) :: ch -> isCxHoles ch | _ -> false
 
 let pr_raw_ssrhintref prc _ _ = function
-  | CAppExpl (_, (None, r), args) when isCHoles args ->
-    prc (CRef r) ++ str "|" ++ int (List.length args)
+  | CAppExpl (_, (None, r, _), args) when isCHoles args ->
+    prc (CRef (r, None)) ++ str "|" ++ int (List.length args)
   | CApp (_, (_, CRef _), _) as c -> prc c
   | CApp (_, (_, c), args) when isCxHoles args ->
     prc c ++ str "|" ++ int (List.length args)
@@ -2107,7 +2128,7 @@ let pr_glob_ssrhintref _ _ _ (c, _) = pr_rawhintref c
 let pr_ssrhintref prc _ _ = prc
 
 let mkhintref loc c n = match c with
-  | CRef r -> CAppExpl (loc, (None, r), mkCHoles loc n)
+  | CRef (r, _) -> CAppExpl (loc, (None, r, None), mkCHoles loc n)
   | _ -> mkAppC (c, mkCHoles loc n)
 
 ARGUMENT EXTEND ssrhintref
@@ -2514,7 +2535,6 @@ let equality_inj l b id c gl =
   try Equality.inj l b c gl
   with
     | Compat.Exc_located(_,Errors.UserError (_,s))
-    | Loc.Exc_located(_,Errors.UserError (_,s))
     | Errors.UserError (_,s)
   when msg := Pp.string_of_ppcmds s;
        !msg = "Not a projectable equality but a discriminable one." ||
@@ -2533,7 +2553,7 @@ let injectl2rtac c = match kind_of_term c with
 
 let is_injection_case c gl =
   let mind, _ = pf_reduce_to_quantified_ind gl (pf_type_of gl c) in
-  mkInd mind = build_ssr_eq ()
+  mkIndU mind = build_ssr_eq ()
 
 let perform_injection c gl =
   let mind, t = pf_reduce_to_quantified_ind gl (pf_type_of gl c) in
@@ -2597,7 +2617,7 @@ let tclTHENS_nonstrict tac tacl taclname gl =
   if n_gls = 0 then tacres else
   let pr_only n1 n2 = if n1 < n2 then str "only " else mt () in
   let pr_nb n1 n2 name =
-    pr_only n1 n2 ++ int n1 ++ str (" " ^ plural n1 name) in
+    pr_only n1 n2 ++ int n1 ++ str (" " ^ String.plural n1 name) in
   errorstrm (pr_nb n_tac n_gls taclname ++ spc ()
              ++ str "for " ++ pr_nb n_gls n_tac "subgoal")
 
@@ -2656,7 +2676,7 @@ let introstac, tclEQINTROS =
     | IpatAnon -> k, intro_anon
     | IpatNoop -> k, tclIDTAC
     | IpatView v -> match ist with
-        | None -> Errors.anomaly "ipattac with no ist but view"
+        | None -> anomaly "ipattac with no ist but view"
         | Some ist -> match rest with
             | (IpatCase _ | IpatRw _)::_ -> 
               let to_clr = ref [] in let top_id = ref top_id in
@@ -2775,9 +2795,9 @@ let tclDO n tac =
   let tac_err_at i gl =
     try tac gl
     with 
-    | Errors.UserError (l, s) -> raise (Errors.UserError (l, prefix i ++ s))
-    | Loc.Exc_located(loc, Errors.UserError (l, s))  -> 
-        raise (Loc.Exc_located(loc, Errors.UserError (l, prefix i ++ s)))
+    | Errors.UserError (l, s) as e ->
+        let e' = Errors.UserError (l, prefix i ++ s) in
+        raise (Exninfo.copy e e')
     | Compat.Exc_located(loc, Errors.UserError (l, s))  -> 
         raise (Compat.Exc_located(loc, Errors.UserError (l, prefix i ++ s))) in
   let rec loop i gl =
@@ -2805,7 +2825,7 @@ let pr_ssrdoarg prc _ prt (((n, m), (tac, _)), clauses) =
 ARGUMENT EXTEND ssrdoarg
   TYPED AS ((ssrindex * ssrmmod) * (ssrhintarg * ltacctx)) * ssrclauses
   PRINTED BY pr_ssrdoarg
-| [ "Qed" ] -> [ Errors.anomaly "Grammar placeholder match" ]
+| [ "Qed" ] -> [ anomaly "Grammar placeholder match" ]
 END
 
 let ssrdotac (((n, m), (tac, ctx)), clauses) =
@@ -2857,7 +2877,7 @@ let pr_ssrseqarg _ _ prt = function
 (* an unindexed tactic.                                            *)
 ARGUMENT EXTEND ssrseqarg TYPED AS ssrindex * (ssrhintarg * tactic option)
                           PRINTED BY pr_ssrseqarg
-| [ "Qed" ] -> [ Errors.anomaly "Grammar placeholder match" ]
+| [ "Qed" ] -> [ anomaly "Grammar placeholder match" ]
 END
 
 let sq_brace_tacnames =
@@ -2973,7 +2993,7 @@ let pr_ssrseqdir _ _ _ = function
   | R2L -> str ";" ++ spc () ++ str "last "
 
 ARGUMENT EXTEND ssrseqdir TYPED AS ssrdir PRINTED BY pr_ssrseqdir
-| [ "Qed" ] -> [ Errors.anomaly "Grammar placeholder match" ]
+| [ "Qed" ] -> [ anomaly "Grammar placeholder match" ]
 END
 
 TACTIC EXTEND ssrtclseq
@@ -3038,7 +3058,7 @@ let pf_interp_ty ist gl ty =
      | CastType (t, ty) when !n_binders = 0 && isSort ty -> t
      | ProdType(n,s,t) -> decr n_binders; mkProd (n, s, aux t)
      | LetInType(n,v,ty,t) -> decr n_binders; mkLetIn (n, v, ty, aux t)
-     | _ -> Errors.anomaly "pf_interp_ty: ssr Type cast deleted by typecheck" in
+     | _ -> anomaly "pf_interp_ty: ssr Type cast deleted by typecheck" in
      sigma, aux t in
    let ty = strip_cast (interp_term ist gl ty) in
    let n, c = pf_abs_evars gl ty in
@@ -3082,7 +3102,7 @@ let saturate ?(beta=false) env sigma c ?(ty=Retyping.get_type_of env sigma c) m
         (Reductionops.whd_betadeltaiota env sigma) ty in
       match kind_of_type ty with
       | ProdType _ -> loop ty args sigma n
-      | _ -> Errors.anomaly "saturate did not find enough products"
+      | _ -> anomaly "saturate did not find enough products"
   in
    loop ty [] sigma m
 
@@ -3136,7 +3156,7 @@ let pf_interp_gen_aux ist gl to_ind ((oclr, occ), t) =
     else false, pat, pf_mkprod gl c cl, c, clr
   else if to_ind && occ = None then
     let nv, p = pf_abs_evars gl (fst pat, c) in
-    if nv = 0 then Errors.anomaly "occur_existential but no evars" else
+    if nv = 0 then anomaly "occur_existential but no evars" else
     false, pat, mkProd (constr_name c, pf_type_of gl p, pf_concl gl), p, clr
   else loc_error (loc_of_cpattern t) "generalized term didn't match"
 
@@ -3177,7 +3197,7 @@ let pr_ssrdgens _ _ _ = pr_dgens pr_gen
 
 let cons_gen gen = function
   | gens :: gensl, clr -> (gen :: gens) :: gensl, clr
-  | _ -> Errors.anomaly "missing gen list"
+  | _ -> anomaly "missing gen list"
 
 let cons_dep (gensl, clr) =
   if List.length gensl = 1 then ([] :: gensl, clr) else
@@ -3247,7 +3267,7 @@ let pr_ssreqid _ _ _ = pr_eqid
 (* We must use primitive parsing here to avoid conflicts with the  *)
 (* basic move, case, and elim tactics.                             *)
 ARGUMENT EXTEND ssreqid TYPED AS ssripatrep option PRINTED BY pr_ssreqid
-| [ "Qed" ] -> [ Errors.anomaly "Grammar placeholder match" ]
+| [ "Qed" ] -> [ anomaly "Grammar placeholder match" ]
 END
 
 let accept_ssreqid strm =
@@ -3339,7 +3359,7 @@ END
 
 (* We just add a numeric version that clears the n top assumptions. *)
 
-let poptac ?ist n = introstac ?ist (List.tabulate (fun _ -> IpatWild) n)
+let poptac ?ist n = introstac ?ist (List.init n (fun _ -> IpatWild))
 
 TACTIC EXTEND ssrclear
   | [ "clear" natural(n) ltacctx(ctx) ] -> [poptac ~ist:(get_ltacctx ctx) n]
@@ -3426,7 +3446,7 @@ let analyze_eliminator elimty env sigma =
   | _ ->
     let env' = Environ.push_rel_context ctx env in
     let t' = Reductionops.whd_betadeltaiota env' sigma t in
-    if not (eq_constr t t') then loop ctx t' else
+    if not (eq_constr_nounivs t t') then loop ctx t' else
       errorstrm (str"The eliminator has the wrong shape."++spc()++
       str"A (applied) bound variable was expected as the conclusion of "++
       str"the eliminator's"++Pp.cut()++str"type:"++spc()++pr_constr elimty) in
@@ -3451,7 +3471,7 @@ let analyze_eliminator elimty env sigma =
  * since we don't want to wipe out let-ins, and it seems there is no flag
  * to change that behaviour in the standard unfold code *)
 let unprotecttac gl =
-  let prot = destConst (mkSsrConst "protect_term") in
+  let (prot, _) = destConst (mkSsrConst "protect_term") in
   onClause (fun idopt ->
     let hyploc = Option.map (fun id -> id, InHyp) idopt in
     reduct_option 
@@ -3531,9 +3551,9 @@ let ssrelim ?(is_case=false) ?ist deps what ?elim eqid ipats gl =
   (* some sanity checks *)
   let oc, orig_clr, occ, c_gen = match what with
   | `EConstr(_,_,t) when isEvar t ->
-    Errors.anomaly "elim called on a constr evar"
+    anomaly "elim called on a constr evar"
   | `EGen _ when ist = None ->
-    Errors.anomaly "no ist and non simple elimination"
+    anomaly "no ist and non simple elimination"
   | `EGen (_, g) when elim = None && is_wildcard g ->
        errorstrm(str"Indeterminate pattern and no eliminator")
   | `EGen ((Some clr,occ), g) when is_wildcard g ->
@@ -3588,7 +3608,8 @@ let ssrelim ?(is_case=false) ?ist deps what ?elim eqid ipats gl =
       let c = Option.get oc in let c_ty = pf_type_of gl c in
       let (kn, i) as ind, unfolded_c_ty = pf_reduce_to_quantified_ind gl c_ty in
       let sort = elimination_sort_of_goal gl in
-      let elim = if not is_case then Indrec.lookup_eliminator ind sort
+      let (_, elim) = if not is_case 
+	then pf_apply (Evd.fresh_global Evd.univ_rigid) gl (Indrec.lookup_eliminator kn sort)
         else pf_apply Indrec.build_case_analysis_scheme gl ind true sort in
       let elimty = pf_type_of gl elim in
       let pred_id,n_elim_args,is_rec,elim_is_dep,n_pred_args =
@@ -3665,7 +3686,7 @@ let ssrelim ?(is_case=false) ?ist deps what ?elim eqid ipats gl =
             clr (i+1) ([], inf_deps)
       | _::_, [] -> errorstrm (str "Too many dependent abstractions") in
     let deps, head_p, inf_deps_r = match what, elim_is_dep, cty with
-    | `EConstr _, _, None -> Errors.anomaly "Simple welim with no term"
+    | `EConstr _, _, None -> anomaly "Simple welim with no term"
     | _, false, _ -> deps, [], inf_deps_r
     | `EGen gen, true, None -> deps @ [gen], [], inf_deps_r
     | _, true, Some (c, _, pc) ->
@@ -3764,15 +3785,26 @@ let ssrelim ?(is_case=false) ?ist deps what ?elim eqid ipats gl =
     tclTHENLIST [refine_with ~with_evars:false elim; cleartac clr] gl in
   (* handling of following intro patterns and equation introduction if any *)
   let elim_intro_tac gl = 
+    pp(lazy(str"elim_intro_tac concl_gl=" ++ pp_term gl (pf_concl gl)));
     let intro_eq = 
       match eqid with 
       | Some (IpatId ipat) when not is_rec -> 
-          let rec intro_eq gl = match kind_of_type (pf_concl gl) with
+          let rec intro_eq gl =
+	    pp(lazy(str"elim_intro_tac intro_eq concl_gl="
+		    ++ pp_term gl (pf_concl gl)));
+	    match kind_of_type (pf_concl gl) with
           | ProdType (_, src, tgt) -> 
-             (match kind_of_type src with
-             | AtomicType (hd, _) when eq_constr hd protectC -> 
-                tclTHENLIST [unprotecttac; introid ipat] gl
-             | _ -> tclTHENLIST [ iD "IA"; introstac [IpatAnon]; intro_eq] gl)
+	    pp(lazy(str"elim_intro_tac intro_eq concl_gl prod src="
+		    ++ pp_term gl src));
+	    (match kind_of_type src with
+            | AtomicType (hd, _) ->  
+	      pp(lazy(str"elim_intro_tac intro_eq concl_gl prod src hd="
+		    ++ pp_term gl hd))
+	    | _ -> ());
+	    (match kind_of_type src with
+            | AtomicType (hd, _) when eq_constr_nounivs hd protectC -> 
+              tclTHENLIST [unprotecttac; introid ipat] gl
+            | _ -> tclTHENLIST [ iD "IA"; introstac [IpatAnon]; intro_eq] gl)
           |_ -> errorstrm (str "Too many names in intro pattern") in
           intro_eq
       | Some (IpatId ipat) -> 
@@ -3789,7 +3821,7 @@ let ssrelim ?(is_case=false) ?ist deps what ?elim eqid ipats gl =
           let concl = pf_concl gl in
           let ctx, last = decompose_prod_assum concl in
           let args = match kind_of_type last with
-          | AtomicType (hd, args) -> assert(eq_constr hd protectC); args
+          | AtomicType (hd, args) -> assert(eq_constr_nounivs hd protectC); args
           | _ -> assert false in
           let case = args.(Array.length args-1) in
           if not(closed0 case) then tclTHEN (introstac [IpatAnon]) gen_eq_tac gl
@@ -3802,7 +3834,9 @@ let ssrelim ?(is_case=false) ?ist deps what ?elim eqid ipats gl =
           apply_type new_concl [case;erefl] gl in
         tclTHENLIST [gen_eq_tac; intro_lhs; introid ipat]
       | _ -> tclIDTAC in
-    let unprot = if eqid <> None && is_rec then unprotecttac else tclIDTAC in
+    let unprot = if eqid <> None && is_rec then unprotecttac else
+	tclIDTAC in
+    pp(lazy(str"tclEQINTROS"));
     tclEQINTROS ?ist elim_tac (tclTHENLIST [intro_eq; unprot]) ipats gl
   in
   tclTHENLIST [gen_eq_tac; elim_intro_tac] orig_gl
@@ -3920,7 +3954,7 @@ let interp_agen ist gl ((goclr, _), (k, gc)) (clr, rcs) =
     if k <> ' ' then clr', rcs' else
     match rc with
     | GVar (loc, id) when not_section_id id -> SsrHyp (loc, id) :: clr', rcs'
-    | GRef (loc, VarRef id) when not_section_id id ->
+    | GRef (loc, VarRef id, _) when not_section_id id ->
         SsrHyp (loc, id) :: clr', rcs'
     | _ -> clr', rcs'
 
@@ -3939,9 +3973,9 @@ let interp_agens ist gl gagens =
 
 let apply_rconstr ?ist t gl =
   let n = match ist, t with
-    | None, (GVar (_, id) | GRef (_, VarRef id)) -> pf_nbargs gl (mkVar id)
+    | None, (GVar (_, id) | GRef (_, VarRef id, _)) -> pf_nbargs gl (mkVar id)
     | Some ist, _ -> interp_nbargs ist gl t
-    | _ -> Errors.anomaly "apply_rconstr without ist and not RVar" in
+    | _ -> anomaly "apply_rconstr without ist and not RVar" in
   let mkRlemma i = mkRApp t (mkRHoles i) in
   let cl = pf_concl gl in
   let rec loop i =
@@ -4042,8 +4076,8 @@ ARGUMENT EXTEND ssrcongrarg TYPED AS ltacctx * ((int * ssrterm) * ssrdgens)
 END
 
 let rec mkRnat n =
-  if n <= 0 then GRef (dummy_loc, glob_O) else
-  mkRApp (GRef (dummy_loc, glob_S)) [mkRnat (n - 1)]
+  if n <= 0 then GRef (dummy_loc, glob_O, None) else
+  mkRApp (GRef (dummy_loc, glob_S, None)) [mkRnat (n - 1)]
 
 let interp_congrarg_at ist gl n rf ty m =
   pp(lazy(str"===interp_congrarg_at==="));
@@ -4221,7 +4255,7 @@ let mk_rwarg (d, (n, _ as m)) ((clr, occ as docc), rx) (rt, _ as r) =
  if rt <> RWeq then begin
    if rt = RWred Nop && not (m = nomult && occ = None && rx = None)
                      && (clr = None || clr = Some []) then
-     Errors.anomaly "Improper rewrite clear switch";
+     anomaly "Improper rewrite clear switch";
    if d = R2L && rt <> RWdef then
      Errors.error "Right-to-left switch on simplification";
    if n <> 1 && rt = RWred Cut then
@@ -4289,7 +4323,7 @@ let simplintac occ rdx sim gl =
 
 let rec get_evalref c =  match kind_of_term c with
   | Var id -> EvalVarRef id
-  | Const k -> EvalConstRef k
+  | Const (k, _) -> EvalConstRef k
   | App (c', _) -> get_evalref c'
   | Cast (c', _, _) -> get_evalref c'
   | _ -> errorstrm (str "The term " ++ pr_constr c ++ str " is not unfoldable")
@@ -4323,18 +4357,18 @@ let unfoldintac occ rdx t (kt,_) gl =
         ++ pr_constr_pat t ++ spc() ++ str "in " ++ pr_constr c)),
     (fun () -> try end_T () with 
       | NoMatch when easy -> fake_pmatcher_end () 
-      | NoMatch -> Errors.anomaly "unfoldintac")
+      | NoMatch -> anomaly "unfoldintac")
   | _ -> 
     (fun env (c as orig_c) h ->
       if const then
           let rec aux c = 
             match kind_of_term c with
-            | Const _ when eq_constr c t -> body env t t
-            | App (f,a) when eq_constr f t -> mkApp (body env f f,a)
+            | Const _ when eq_constr_nounivs c t -> body env t t
+            | App (f,a) when eq_constr_nounivs f t -> mkApp (body env f f,a)
             | _ -> let c = Reductionops.whd_betaiotazeta sigma0 c in
             match kind_of_term c with
-            | Const _ when eq_constr c t -> body env t t
-            | App (f,a) when eq_constr f t -> mkApp (body env f f,a)
+            | Const _ when eq_constr_nounivs c t -> body env t t
+            | App (f,a) when eq_constr_nounivs f t -> mkApp (body env f f,a)
             | Const f -> aux (body env c c)
             | App (f, a) -> aux (mkApp (body env f f, a))
             | _ -> errorstrm (str "The term "++pr_constr orig_c++
@@ -4377,7 +4411,7 @@ let foldtac occ rdx ft gl =
 
 let converse_dir = function L2R -> R2L | R2L -> L2R
 
-let rw_progress rhs lhs ise = not (eq_constr lhs (Evarutil.nf_evar ise rhs))
+let rw_progress rhs lhs ise = not (eq_constr_nounivs lhs (Evarutil.nf_evar ise rhs))
 
 (* Coq has a more general form of "equation" (any type with a single *)
 (* constructor with no arguments with_rect_r elimination lemmas).    *)
@@ -4405,21 +4439,22 @@ let pirrel_rewrite pred rdx rdx_ty new_rdx dir (sigma, c) c_ty gl =
     Evarutil.new_evar sigma env (beta (subst1 new_rdx pred)) in
   let pred = mkNamedLambda pattern_id rdx_ty pred in
   let elim = 
-    (* let (kn, i) as ind, unfolded_c_ty = pf_reduce_to_quantified_ind gl c_ty in *)
-    (* let sort = elimination_sort_of_goal gl in *)
-    (* let elim = Indrec.lookup_eliminator ind sort in *)
-    pp(lazy(str"searching for elim"));
-    let elim = mkSsrConst "identity_nondep_rect" in
-    pp(lazy(str"base elim is " ++ pr_constr elim));
+    let (kn, i), unfolded_c_ty = pf_reduce_to_quantified_ind gl c_ty in
+    let sort = elimination_sort_of_goal gl in
+    let (_, elim) =
+      pf_apply (Evd.fresh_global Evd.univ_rigid) gl
+  (Indrec.lookup_eliminator kn sort) in
+    (* Cyril: Old and dirty fix, just in case *)
+    (* pp(lazy(str"searching for elim")); *)
+    (* let elim = mkSsrConst "identity_nondep_rect" in *)
+    (* pp(lazy(str"base elim is " ++ pr_constr elim)); *)
     if dir = R2L then elim else (* taken from Coq's rewrite *)
-    let elim = destConst elim in          
+    let (elim, _) = destConst elim in          
     let mp,dp,l = repr_con (constant_of_kn (canonical_con elim)) in
     let l' = label_of_id (Nameops.add_suffix (id_of_label l) "_r")  in 
     let c1' = Global.constant_of_delta_kn (canonical_con (make_con mp dp l')) in
     mkConst c1' in
-  pp(lazy(str"elim is " ++ pr_constr elim));
   let proof = mkApp (elim, [| rdx_ty; new_rdx; pred; p; rdx; c |]) in
-  pp(lazy(str"proof is " ++ pr_constr proof));
   (* We check the proof is well typed *)
   let proof_ty =
     try Typing.type_of env sigma proof with _ -> raise PRtype_error in
@@ -4438,14 +4473,14 @@ let pirrel_rewrite pred rdx rdx_ty new_rdx dir (sigma, c) c_ty gl =
           | ProdType (name, _, t) -> name :: aux t (n-1)
           | _ -> assert false in aux hd_ty (Array.length args) in
         hd_ty, Util.List.map_filter (fun (t, name) ->
-          let evs = Util.Intset.elements (Evarutil.evars_of_term t) in
+          let evs = Intset.elements (Evarutil.evars_of_term t) in
           let open_evs = List.filter (fun k ->
             InProp <> Retyping.get_sort_family_of
               env sigma (Evd.evar_concl (Evd.find sigma k)))
             evs in
           if open_evs <> [] then Some name else None)
           (List.combine (Array.to_list args) names)
-    | _ -> Errors.anomaly "rewrite rule not an application" in
+    | _ -> anomaly "rewrite rule not an application" in
     errorstrm (Himsg.explain_refiner_error (Logic.UnresolvedBindings miss)++
       (Pp.fnl()++str"Rule's type:" ++ spc() ++ pr_constr hd_ty))
 ;;
@@ -4488,7 +4523,7 @@ let rwcltac cl rdx dir sr gl =
       else errorstrm (str "Dependent type error in rewrite of "
         ++ pf_pr_constr gl (mkNamedLambda pattern_id rdxt cl))
     | Errors.UserError _ as e -> raise e
-    | e -> Errors.anomaly ("cvtac's exception: " ^ Printexc.to_string e);
+    | e -> anomaly ("cvtac's exception: " ^ Printexc.to_string e);
   in
   tclTHEN cvtac' rwtac gl
 
@@ -4534,14 +4569,21 @@ let rwrxtac occ rdx_pat dir rule gl =
     let rec loop d sigma r t0 rs red =
       let t =
         if red = 1 then Tacred.hnf_constr env sigma t0
-        else Reductionops.whd_betaiotazeta sigma t0 in
+        else Reductionops.whd_betaiotazeta sigma t0 in 
+      pp(lazy(str"rwrxtac loop t=" ++ pp_term gl t));
+      (match kind_of_term t with
+	| App (pr, a) -> pp(lazy(str"rwrxtac loop prod=" ++ pp_term gl pr))
+        | _ -> ());
       match kind_of_term t with
       | Prod (_, xt, at) ->
         let ise, x = Evarutil.new_evar (create_evar_defs sigma) env xt in
         loop d ise (mkApp (r, [|x|])) (subst1 x at) rs 0
       | App (pr, a) when pr = coq_prod.Coqlib.typ ->
+	 pp(lazy(str"rwrxtac loop when prod t=" ++ pp_term gl t));
         let sr = match kind_of_term (Tacred.hnf_constr env sigma r) with
-        | App (c, ra) when c = coq_prod.Coqlib.intro -> fun i -> ra.(i + 1)
+        | App (c, ra)
+	    when is_global (global_of_constr coq_prod.Coqlib.intro) c -> 
+	  fun i -> ra.(i + 1)
         | _ -> let ra = Array.append a [|r|] in
           function 1 -> mkApp (coq_prod.Coqlib.proj1, ra)
                 | _ ->  mkApp (coq_prod.Coqlib.proj2, ra) in
@@ -4551,9 +4593,9 @@ let rwrxtac occ rdx_pat dir rule gl =
          let sigma2, rs2 = loop d sigma (sr 2) a.(1) rs 0 in
          loop d sigma2 (sr 1) a.(0) rs2 0
       | App (r_eq, a) when Hipattern.match_with_equality_type t != None ->
-        let ind = destInd r_eq and rhs = Array.last a in
+        let (ind, _) as indU = destInd r_eq and rhs = Array.last a in
         let np, ndep = Inductiveops.inductive_nargs ind in
-        let ind_ct = Inductiveops.type_of_constructors env ind in
+        let ind_ct = Inductiveops.type_of_constructors env indU in
         let lhs0 = last_arg (strip_prod_assum ind_ct.(0)) in
         let rdesc = match kind_of_term lhs0 with
         | Rel i ->
@@ -4660,7 +4702,7 @@ let pr_ssrrwargs _ _ _ (rwargs, _) = pr_list spc pr_rwarg rwargs
 
 ARGUMENT EXTEND ssrrwargs TYPED AS ssrrwarg list * ltacctx
                           PRINTED BY pr_ssrrwargs
-  | [ "Qed" ] -> [ Errors.anomaly "Grammar placeholder match" ]
+  | [ "Qed" ] -> [ anomaly "Grammar placeholder match" ]
 END
 
 let ssr_rw_syntax = ref true
@@ -4749,7 +4791,7 @@ let pr_ssrfwdid _ _ _ id = pr_spc () ++ pr_id id
 (* We use a primitive parser for the head identifier of forward *)
 (* tactis to avoid syntactic conflicts with basic Coq tactics. *)
 ARGUMENT EXTEND ssrfwdid TYPED AS ident PRINTED BY pr_ssrfwdid
-  | [ "Qed" ] -> [ Errors.anomaly "Grammar placeholder match" ]
+  | [ "Qed" ] -> [ anomaly "Grammar placeholder match" ]
 END
 
 let accept_ssrfwdid strm =
@@ -4969,7 +5011,7 @@ ARGUMENT EXTEND ssrbvar TYPED AS constr PRINTED BY pr_ssrbvar
 END
 
 let bvar_lname = function
-  | CRef (Ident (loc, id)) -> loc, Name id
+  | CRef (Ident (loc, id), _) -> loc, Name id
   | c -> constr_loc c, Anonymous
 
 let pr_ssrbinder prc _ _ (_, c) = prc c
@@ -5024,7 +5066,7 @@ let push_binders c2 bs =
   | (_, CLetIn (loc1, x, v, _)) :: bs ->
       CLetIn (mkloc loc1, x, v, loop ty c bs)
   | [] -> c
-  | _ -> Errors.anomaly "binder not a lambda nor a let in" in
+  | _ -> anomaly "binder not a lambda nor a let in" in
   match c2 with
   | CCast (x, ct, CastConv cty) ->
       (CCast (x, loop false ct bs, CastConv (loop true cty bs)))
@@ -5064,7 +5106,7 @@ END
 let pr_ssrfixfwd _ _ _ (id, fwd) = str " fix " ++ pr_id id ++ pr_fwd fwd
 
 let bvar_locid = function
-  | CRef (Ident (loc, id)) -> loc, id
+  | CRef (Ident (loc, id), _) -> loc, id
   | _ -> Errors.error "Missing identifier after \"(co)fix\""
 
 
@@ -5192,7 +5234,7 @@ let intro_id_to_binder = List.map (function
       (FwdPose, [BFvar]),
         CLambdaN (dummy_loc, [[x], Default Explicit, CHole (xloc, None)],
           CHole (dummy_loc, None))
-  | _ -> Errors.anomaly "non-id accepted as binder")
+  | _ -> anomaly "non-id accepted as binder")
 
 let binder_to_intro_id = List.map (function
   | (FwdPose, [BFvar]), CLambdaN (_,[ids,_,_],_)
@@ -5200,7 +5242,7 @@ let binder_to_intro_id = List.map (function
       List.map (function (_, Name id) -> IpatId id | _ -> IpatAnon) ids
   | (FwdPose, [BFdef _]), CLetIn (_,(_,Name id),_,_) -> [IpatId id]
   | (FwdPose, [BFdef _]), CLetIn (_,(_,Anonymous),_,_) -> [IpatAnon]
-  | _ -> Errors.anomaly "ssrbinder is not a binder")
+  | _ -> anomaly "ssrbinder is not a binder")
 
 let pr_ssrhavefwdwbinders _ _ prt (hpats, (fwd, hint)) =
   pr_hpats hpats ++ pr_fwd fwd ++ pr_hint prt hint
@@ -5318,7 +5360,7 @@ let sufftac ((((clr, pats),binders),simpl), (((_, c), ctx), hint)) =
   let c = match c with
   | (a, (b, Some (CCast (_, _, CastConv cty)))) -> a, (b, Some cty)
   | (a, (GCast (_, _, CastConv cty), None)) -> a, (cty, None)
-  | _ -> Errors.anomaly "suff: ssr cast hole deleted by typecheck" in
+  | _ -> anomaly "suff: ssr cast hole deleted by typecheck" in
   let ctac gl = basecuttac "ssr_suff" (pi2 (pf_interp_ty ist gl c)) gl in
   tclTHENS ctac [htac; tclTHEN (cleartac clr) (introstac ~ist (binders@simpl))]
 
@@ -5337,7 +5379,7 @@ END
 let pr_wgen = function 
   | (clr, Some (SsrHyp (loc, c), guard)) ->
      spc () ++ pr_clear mt clr ++
-       pr_term (mk_term guard.[0] (CRef (Ident (loc, c))))
+       pr_term (mk_term guard.[0] (CRef (Ident (loc, c), None)))
   | (clr, None) -> spc () ++ pr_clear mt clr
 let pr_ssrwgen _ _ _ = pr_wgen
 
@@ -5375,7 +5417,7 @@ let wlogtac (((clr0, pats),_),_) (gens, ((_, ct), ctx)) hint suff gl =
   let ct = match ct with
   | (a, (b, Some (CCast (_, _, CastConv cty)))) -> a, (b, Some cty)
   | (a, (GCast (_, _, CastConv cty), None)) -> a, (cty, None)
-  | _ -> Errors.anomaly "wlog: ssr cast hole deleted by typecheck" in
+  | _ -> anomaly "wlog: ssr cast hole deleted by typecheck" in
   let cl0 = mkArrow (pi2 (pf_interp_ty ist gl ct)) (pf_concl gl) in
   let cl0 = if not suff then cl0 else let _,t,_ = destProd cl0 in t in
   let c = List.fold_right mkabs gens cl0 in
@@ -5438,9 +5480,9 @@ GEXTEND Gram
           d = def_body ->
           let s = coerce_reference_to_id qid in
 	  Vernacexpr.VernacDefinition
-	    ((Decl_kinds.Global,Decl_kinds.CanonicalStructure),
-             (dummy_loc,s),(d  ),
-             (fun _ -> Recordops.declare_canonical_structure))
+	    (G_vernac.add_polymorphism 
+	       (Decl_kinds.Global,Decl_kinds.CanonicalStructure),
+             (dummy_loc,s),(d  ))
 (*It seems there is not need for these:
       (* Canonical structure *)
       | IDENT "Canonical"; IDENT "Structure"; qid = Constr.global ->

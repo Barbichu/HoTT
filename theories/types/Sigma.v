@@ -72,14 +72,14 @@ Definition projT1_path `{P : A -> Type} {u v : sigT P} (p : u = v)
   ap (@projT1 _ _) p.
   (* match p with idpath => 1 end. *)
 
-Notation "p ..1" := (projT1_path p) (at level 3) : fibration_scope.
+Notation "p ..1" := (projT1_path p) (at level 2) : fibration_scope.
 
 Definition projT2_path `{P : A -> Type} {u v : sigT P} (p : u = v)
   : p..1 # u.2 = v.2
   := (transport_compose P (@projT1 _ _) p u.2)^
      @ (@apD {x:A & P x} _ (@projT2 _ _) _ _ p).
 
-Notation "p ..2" := (projT2_path p) (at level 3) : fibration_scope.
+Notation "p ..2" := (projT2_path p) (at level 2) : fibration_scope.
 
 (** Now we show how these things compute. *)
 

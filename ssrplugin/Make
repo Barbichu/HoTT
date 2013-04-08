@@ -7,8 +7,11 @@
 ##
 
 ## What follows should be left untouched by the final user of ssreflect
+-arg "-coqlib ../coq"
 -R theories Ssreflect
+-R ../theories HoTT
 -I src
+ZDEBUG = "-annot"
 CAMLP4OPTIONS = "-loc loc"
 src/ssrmatching.mli
 src/ssrmatching.ml4
@@ -17,3 +20,4 @@ theories/ssreflect.mllib
 theories/ssrmatching.v
 theories/ssreflect.v
 theories/ssrfun.v
+

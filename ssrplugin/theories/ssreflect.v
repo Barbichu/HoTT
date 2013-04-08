@@ -1,7 +1,6 @@
 (* (c) Copyright Microsoft Corporation and Inria. All rights reserved. *)
-Require Import Bool. (* For bool_scope delimiter 'bool'. *)
-Require Export Logic_Type.
-Local Open Scope identity_scope.
+Require Import HoTT.
+Local Open Scope path_scope.
 Require Import ssrmatching.
 Set SsrAstVersion.
 
@@ -87,16 +86,17 @@ Notation "'if' c 'as' x 'return' t 'then' v1 'else' v2" :=
 
 (* Force boolean interpretation of simple if expressions.                     *)
 
+Delimit Scope boolean with bool.
 Delimit Scope boolean_if_scope with BOOL_IF.
 
 Notation "'if' c 'return' t 'then' v1 'else' v2" :=
-  (if c%bool is true in bool return t then v1 else v2) : boolean_if_scope.
+  (if c%bool is true in Bool return t then v1 else v2) : boolean_if_scope.
 
 Notation "'if' c 'then' v1 'else' v2" :=
-  (if c%bool is true in bool return _ then v1 else v2) : boolean_if_scope.
+  (if c%bool is true in Bool return _ then v1 else v2) : boolean_if_scope.
 
 Notation "'if' c 'as' x 'return' t 'then' v1 'else' v2" :=
-  (if c%bool is true as x in bool return t then v1 else v2) : boolean_if_scope.
+  (if c%bool is true as x in Bool return t then v1 else v2) : boolean_if_scope.
 
 Open Scope boolean_if_scope.
 
@@ -299,24 +299,58 @@ Notation "=^~ r" := (ssr_converse r) (at level 100) : form_scope.
 
 Notation nosimpl t := (let: tt := tt in t).
 
-Lemma master_key : unit. Proof. exact tt. Qed.
+Lemma master_key : Unit. Proof. exact tt. Qed.
 Definition locked A := let: tt := master_key in fun x : A => x.
 
-Lemma lock A x : x = locked x :> A. Proof. unlock; reflexivity. Qed.
+Lemma lock A x : x = locked x :> A. Proof. unlock. reflexivity. Qed.
+
+(* We introduce a "no confusion class",
+  c.f. http://dx.doi.org/10.1007/11617990_12
+  and plugin Equations for Coq,
+  except we make it a structure, and we will inhabit it with "Canonical"
+   NoconfTypes should be generated for each inductive.
+*)
+
+Record noconf_class_of (T : Type) : Type := NoconfClass {
+  NoConf : T -> T -> Type -> Type;
+  noconf_op : forall (x y : T), x = y -> forall P, NoConf x y P
+}.
+
+Record noconfType : Type := NoConfType {
+  noconf_sort :> Type;
+  noconf_class : noconf_class_of noconf_sort
+}.
+
+Definition noconf (T : noconfType) := @noconf_op _ (noconf_class T).
+
+(* discriminate and injection are particular cases of noconfusion *)
+Ltac inject := move=> /noconf; apply.
+Ltac discrim :=
+  solve [inject|match goal with H : _ |- _ => move: H; solve[inject] end].
+
+(* noconfusion for booleans. *)
+Lemma bool_noconf (b b' : Bool): b = b' -> forall P,
+  match b, b' with
+    | true, true | false, false => P -> P
+    | _, _ => P
+  end.
+Proof. by move->; case: b' => /=. Qed.
+
+Definition bool_noconf_class := NoconfClass bool_noconf.
+Canonical bool_noconf_type := @NoConfType Bool bool_noconf_class.
 
 Lemma not_locked_false_eq_true : locked false <> true.
-Proof.  unlock; discriminate. Qed.
+Proof. by unlock; discrim. Qed.
 
 (* The basic closing tactic "done".                                           *)
 (* XXX Andrej: sym_equal should not exist because it makes Coq behave funny,
    there is its equivalent, called opposite. *)
 Ltac done :=
   trivial; hnf; intros; solve
-   [ do ![solve [trivial | apply: identity_sym ; trivial]
-         | discriminate | contradiction | split]
+   [ do ![solve [trivial | apply: inverse ; trivial]
+         | discrim | contradiction | split]
    | case not_locked_false_eq_true; assumption
    | match goal with H : ~ _ |- _ => solve [case H; trivial] end ].
-
 
 (* To unlock opaque constants. *)
 Structure unlockable T v := Unlockable {unlocked : T; _ : unlocked = v}.
@@ -358,12 +392,16 @@ Definition ssr_wlog := ssr_suff.
 Implicit Arguments ssr_wlog [Pgoal].
 
 (* assia : internal for HoTT eq as identity, should be done otherwise *)
-Definition identity_nondep_rect (A : Type) (a : A) (X : A -> Type) :
+Definition path_nondep_rect (A : Type) (a : A) (X : A -> Type) :
   X a -> forall y : A, a = y -> X y :=
-  identity_rect a (fun (y0 : A) (_ : a = y0) => X y0).
-Arguments identity_nondep_rect [A] a X xa y i.
+  paths_rect a (fun (y0 : A) (_ : a = y0) => X y0).
+Arguments path_nondep_rect [A] a X xa y i.
 
-Definition identity_nondep_rect_r := identity_rect_r.
+Definition paths_rect_r (A:Type) (a:A) (P:A -> Type) :
+   P a -> forall y:A, y = a -> P y :=
+fun Pa y pya => let: idpath := (inverse pya) in Pa.
+
+Definition paths_nondep_rect_r := paths_rect_r.
 
 (* Internal N-ary congruence lemmas for the congr tactic.                     *)
 

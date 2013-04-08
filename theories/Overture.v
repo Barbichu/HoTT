@@ -26,8 +26,10 @@ Notation "( x ; y )" := (existT _ x y) : fibration_scope.
 Open Scope fibration_scope.
 
 (** The following notation is very convenient, although it unfortunately clashes with Proof General's "electric period". *)
-Notation "x .1" := (projT1 x) (at level 3) : fibration_scope.
-Notation "x .2" := (projT2 x) (at level 3) : fibration_scope.
+Notation "x .1" := (projT1 x)
+  (at level 2, left associativity, format "x .1") : fibration_scope.
+Notation "x .2" := (projT2 x)
+  (at level 2, left associativity, format "x .2") : fibration_scope.
 
 (** Composition of functions. *)
 Definition compose {A B C : Type} (g : B -> C) (f : A -> B) :=
@@ -90,7 +92,7 @@ Notation "1" := idpath : path_scope.
 Notation "p @ q" := (concat p q) (at level 20) : path_scope.
 
 (* The inverse of a path. *)
-Notation "p ^" := (inverse p) (at level 3) : path_scope.
+Notation "p ^" := (inverse p) (at level 2) : path_scope.
 
 (* An alternative notation which puts each path on its own line.  Useful as a temporary device during proofs of equalities between very long composites; to turn it on inside a section, say [Open Scope long_path_scope]. *)
 Notation "p @' q" := (concat p q) (at level 21, left associativity,
@@ -219,7 +221,8 @@ Notation "A <~> B" := (Equiv A B) (at level 85) : equiv_scope.
 
 (** A notation for the inverse of an equivalence.  We can apply this to a function as long as there is a typeclass instance asserting it to be an equivalence.  We can also apply it to an element of [A <~> B], since there is an implicit coercion to [A -> B] and also an existing instance of [IsEquiv]. *)
 
-Notation "f ^-1" := (@equiv_inv _ _ f _) (at level 3) : equiv_scope.
+Notation "f ^-1" := (@equiv_inv _ _ f _)
+  (at level 3, left associativity, format "f ^-1") : equiv_scope.
 
 (** *** Truncation levels *)
 
@@ -299,6 +302,7 @@ Inductive Empty : Type := .
 Definition not (A:Type) : Type := A -> Empty.
 Notation "~ x" := (not x) : type_scope.
 Hint Unfold not: core.
+Notation "x <> y" := (~ (x = y)%type) : type_scope.
 
 (* Ssreflect tactics, adapted by Robbert Krebbers *)
 Ltac done := 
