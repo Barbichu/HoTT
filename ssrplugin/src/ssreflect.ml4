@@ -4578,12 +4578,14 @@ let rwrxtac occ rdx_pat dir rule gl =
       | Prod (_, xt, at) ->
         let ise, x = Evarutil.new_evar (create_evar_defs sigma) env xt in
         loop d ise (mkApp (r, [|x|])) (subst1 x at) rs 0
-      | App (pr, a) when pr = coq_prod.Coqlib.typ ->
-	 pp(lazy(str"rwrxtac loop when prod t=" ++ pp_term gl t));
+      | App (pr, a) when 
+	  is_global (global_of_constr coq_prod.Coqlib.typ) pr -> 
+	  pp(lazy(str"rwrxtac loop when prod t=" ++ pp_term gl t));
         let sr = match kind_of_term (Tacred.hnf_constr env sigma r) with
-        | App (c, ra)
-	    when is_global (global_of_constr coq_prod.Coqlib.intro) c -> 
-	  fun i -> ra.(i + 1)
+        | App (c, ra) when 
+	    is_global (global_of_constr coq_prod.Coqlib.intro) c -> 
+	    pp(lazy(str"c is intro"));
+	      fun i -> ra.(i + 1)
         | _ -> let ra = Array.append a [|r|] in
           function 1 -> mkApp (coq_prod.Coqlib.proj1, ra)
                 | _ ->  mkApp (coq_prod.Coqlib.proj2, ra) in
